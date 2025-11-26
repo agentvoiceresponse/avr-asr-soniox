@@ -1,0 +1,28 @@
+{
+  "name": "avr-asr-soniox",
+  "version": "1.0.0",
+  "author": "Agent Voice Response <info@agentvoiceresponse.com>",
+  "description": "Soniox Automatic Speech Recognition service for Agent Voice Response",
+  "main": "index.js",
+  "scripts": {
+    "start": "node .",
+    "start:dev": "nodemon --inspect ./index.js",
+    "dc:build": "docker build --platform=linux/amd64 -t agentvoiceresponse/avr-asr-soniox:latest -t agentvoiceresponse/avr-asr-soniox:${npm_package_version} .",
+    "dc:push": "docker push agentvoiceresponse/avr-asr-soniox:latest && docker push agentvoiceresponse/avr-asr-soniox:${npm_package_version}"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  },
+  "contributors": [
+    {
+      "name": "Giuseppe Careri",
+      "email": "info@gcareri.com",
+      "url": "https://github.com/gcareri"
+    }
+  ]
+}
