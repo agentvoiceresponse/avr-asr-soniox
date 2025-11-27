@@ -22,6 +22,12 @@ const handleAudioStream = async (req, res) => {
   let sonioxWs = null;
   let configSent = false;
   let isFinished = false;
+  // Track all final tokens we've seen (keyed by start_ms for uniqueness)
+  const finalTokensMap = new Map();
+  // Track the last final_audio_proc_ms we've processed
+  let lastFinalAudioProcMs = 0;
+  // Track the last transcript we sent to avoid duplicates
+  let lastSentTranscript = '';
 
   try {
     // Create WebSocket connection to Soniox
@@ -34,7 +40,8 @@ const handleAudioStream = async (req, res) => {
       const config = {
         api_key: process.env.SONIOX_API_KEY,
         model: process.env.SONIOX_SPEECH_RECOGNITION_MODEL || 'stt-rt-preview',
-        audio_format: 's16le', // linear16 PCM format (signed 16-bit little-endian)
+        // "audio_format": "auto",
+        audio_format: 'pcm_s16le', // linear16 PCM format (signed 16-bit little-endian)
         sample_rate: 8000,
         num_channels: 1,
         language_hints: process.env.SONIOX_SPEECH_RECOGNITION_LANGUAGE 
@@ -72,22 +79,40 @@ const handleAudioStream = async (req, res) => {
 
         // Process tokens
         if (response.tokens && Array.isArray(response.tokens)) {
-          // Filter and process final tokens
-          const finalTokens = response.tokens.filter(token => token.is_final);
+          // Check if we have new final tokens (based on final_audio_proc_ms)
+          const hasNewFinalTokens = response.final_audio_proc_ms > lastFinalAudioProcMs;
           
-          if (finalTokens.length > 0) {
-            // Sort tokens by start time to maintain order
-            const sortedTokens = finalTokens.sort((a, b) => 
-              (a.start_ms || 0) - (b.start_ms || 0)
-            );
+          if (hasNewFinalTokens) {
+            // Update all final tokens we've seen
+            response.tokens.forEach(token => {
+              if (token.is_final && token.start_ms !== undefined) {
+                // Use start_ms as unique key to avoid duplicates
+                finalTokensMap.set(token.start_ms, token);
+              }
+            });
 
-            // Build transcript from final tokens
-            const transcript = sortedTokens
-              .map(token => token.text)
-              .join(' ')
-              .trim();
+            // Get all final tokens sorted by start time
+            const allFinalTokens = Array.from(finalTokensMap.values())
+              .filter(token => token.is_final)
+              .sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0));
 
-            res.write(transcript);
+            if (allFinalTokens.length > 0) {
+              // Build complete transcript from all final tokens
+              const transcript = allFinalTokens
+                .map(token => token.text)
+                .join('')
+                .trim();
+
+              // Only send if transcript has changed (avoid duplicates)
+              if (transcript && transcript !== lastSentTranscript) {
+                console.log(`Transcript: ${transcript}`);
+                res.write(transcript);
+                lastSentTranscript = transcript;
+              }
+            }
+
+            // Update last processed final audio
+            lastFinalAudioProcMs = response.final_audio_proc_ms;
           }
         }
       } catch (err) {
@@ -128,6 +153,10 @@ const handleAudioStream = async (req, res) => {
       if (sonioxWs && sonioxWs.readyState === WebSocket.OPEN) {
         // Send empty frame to gracefully close
         sonioxWs.send(Buffer.alloc(0));
+        console.log('Sent empty frame to Soniox');  
+        sonioxWs.close();
+        console.log('Closed Soniox connection');
+        res.end();
       }
     });
 
