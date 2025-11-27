@@ -1,6 +1,6 @@
 {
   "name": "avr-asr-soniox",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Agent Voice Response <info@agentvoiceresponse.com>",
   "description": "Soniox Automatic Speech Recognition service for Agent Voice Response",
   "main": "index.js",
