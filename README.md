@@ -51,8 +51,8 @@ SONIOX_API_KEY=your_soniox_api_key
 # Optional: Soniox WebSocket URL (defaults to production endpoint)
 SONIOX_WEBSOCKET_URL=wss://stt-rt.soniox.com/transcribe-websocket
 
-# Optional: Speech recognition model (default: stt-rt-preview)
-SONIOX_SPEECH_RECOGNITION_MODEL=stt-rt-preview
+# Optional: Speech recognition model (default: stt-rt-v3)
+SONIOX_SPEECH_RECOGNITION_MODEL=stt-rt-v3
 
 # Optional: Language hints (default: en)
 # Can be a single language code or comma-separated list
@@ -63,7 +63,7 @@ PORT=6018
 ```
 
 **Available Models:**
-- `stt-rt-preview` - Real-time preview model (default)
+- `stt-rt-v3` - Real-time preview model (default)
 - See [Soniox Models](https://docs.soniox.com/stt/models) for the full list
 
 **Supported Languages:**

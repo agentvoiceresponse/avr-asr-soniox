@@ -21,13 +21,7 @@ const app = express();
 const handleAudioStream = async (req, res) => {
   let sonioxWs = null;
   let configSent = false;
-  let isFinished = false;
-  // Track all final tokens we've seen (keyed by start_ms for uniqueness)
-  const finalTokensMap = new Map();
-  // Track the last final_audio_proc_ms we've processed
-  let lastFinalAudioProcMs = 0;
-  // Track the last transcript we sent to avoid duplicates
-  let lastSentTranscript = '';
+  const audioPacketQueue = []; // Coda per i pacchetti audio ricevuti durante la configurazione
 
   try {
     // Create WebSocket connection to Soniox
@@ -39,82 +33,69 @@ const handleAudioStream = async (req, res) => {
       // Send configuration message
       const config = {
         api_key: process.env.SONIOX_API_KEY,
-        model: process.env.SONIOX_SPEECH_RECOGNITION_MODEL || 'stt-rt-preview',
-        // "audio_format": "auto",
+        model: process.env.SONIOX_SPEECH_RECOGNITION_MODEL || 'stt-rt-v3',
         audio_format: 'pcm_s16le', // linear16 PCM format (signed 16-bit little-endian)
         sample_rate: 8000,
         num_channels: 1,
-        language_hints: process.env.SONIOX_SPEECH_RECOGNITION_LANGUAGE 
-          ? [process.env.SONIOX_SPEECH_RECOGNITION_LANGUAGE] 
-          : ['en']
+        language_hints: process.env.SONIOX_SPEECH_RECOGNITION_LANGUAGE
+          ? [process.env.SONIOX_SPEECH_RECOGNITION_LANGUAGE]
+          : ['en'],
+        enable_endpoint_detection: true,
       };
 
       sonioxWs.send(JSON.stringify(config));
+      const { api_key, ...configWithoutApiKey } = config;
+      console.log('Soniox configuration sent', configWithoutApiKey);
       configSent = true;
-      console.log('Soniox configuration sent');
+
+      const queuedPacketsCount = audioPacketQueue.length;
+      while (audioPacketQueue.length > 0 && sonioxWs.readyState === WebSocket.OPEN) {
+        const packet = audioPacketQueue.shift();
+        sonioxWs.send(packet);
+      }
+
+      if (queuedPacketsCount > 0) {
+        console.log(`Sent ${queuedPacketsCount} buffered audio packets`);
+      }
     });
 
     sonioxWs.on('message', (data) => {
       try {
         const response = JSON.parse(data.toString());
+        console.log(response);
 
         // Handle error response
-        if (response.error_code) {
-          console.error(`Soniox API Error (${response.error_code}):`, response.error_message);
-          if (!res.headersSent) {
-            res.status(response.error_code).json({ message: response.error_message });
-          } else {
-            res.end();
-          }
-          return;
-        }
+        // if (response.error_code) {
+        //   console.error(`Soniox API Error (${response.error_code}):`, response.error_message);
+        //   if (!res.headersSent) {
+        //     res.status(response.error_code).json({ message: response.error_message });
+        //   } else {
+        //     res.end();
+        //   }
+        //   return;
+        // }
 
-        // Handle finished response
-        if (response.finished) {
-          console.log('Soniox transcription finished');
-          isFinished = true;
-          res.end();
-          return;
-        }
+        // // Handle finished response
+        // if (response.finished) {
+        //   console.log('Soniox transcription finished');
+        //   isFinished = true;
+        //   res.end();
+        //   return;
+        // }
 
-        // Process tokens
-        if (response.tokens && Array.isArray(response.tokens)) {
-          // Check if we have new final tokens (based on final_audio_proc_ms)
-          const hasNewFinalTokens = response.final_audio_proc_ms > lastFinalAudioProcMs;
-          
-          if (hasNewFinalTokens) {
-            // Update all final tokens we've seen
-            response.tokens.forEach(token => {
-              if (token.is_final && token.start_ms !== undefined) {
-                // Use start_ms as unique key to avoid duplicates
-                finalTokensMap.set(token.start_ms, token);
-              }
-            });
+        // // Process tokens
+        if (response.tokens && response.tokens.length > 0) {
+          const finalText = response.tokens
+            .filter(t => t.is_final)
+            .map(t => t.text)
+            .join('');
 
-            // Get all final tokens sorted by start time
-            const allFinalTokens = Array.from(finalTokensMap.values())
-              .filter(token => token.is_final)
-              .sort((a, b) => (a.start_ms || 0) - (b.start_ms || 0));
-
-            if (allFinalTokens.length > 0) {
-              // Build complete transcript from all final tokens
-              const transcript = allFinalTokens
-                .map(token => token.text)
-                .join('')
-                .trim();
-
-              // Only send if transcript has changed (avoid duplicates)
-              if (transcript && transcript !== lastSentTranscript) {
-                console.log(`Transcript: ${transcript}`);
-                res.write(transcript);
-                lastSentTranscript = transcript;
-              }
-            }
-
-            // Update last processed final audio
-            lastFinalAudioProcMs = response.final_audio_proc_ms;
+          if (finalText) {
+            console.log('Soniox transcription final text', finalText);
+            res.write(finalText);
           }
         }
+
       } catch (err) {
         console.error('Error parsing Soniox response:', err);
       }
@@ -122,18 +103,13 @@ const handleAudioStream = async (req, res) => {
 
     sonioxWs.on('close', () => {
       console.log('Soniox WebSocket Connection Closed');
-      if (!isFinished && !res.headersSent) {
-        res.end();
-      }
+      res.end();
     });
 
     sonioxWs.on('error', (error) => {
       console.error('Soniox WebSocket Error:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ message: 'Soniox WebSocket error' });
-      } else {
-        res.end();
-      }
+      res.status(500).json({ message: 'Soniox WebSocket error' });
+      res.end();
     });
 
     // Set up SSE headers
@@ -145,6 +121,8 @@ const handleAudioStream = async (req, res) => {
     req.on('data', (chunk) => {
       if (sonioxWs && sonioxWs.readyState === WebSocket.OPEN && configSent) {
         sonioxWs.send(chunk);
+      } else if (sonioxWs && sonioxWs.readyState === WebSocket.OPEN && !configSent) {
+        audioPacketQueue.push(chunk);
       }
     });
 
@@ -153,7 +131,7 @@ const handleAudioStream = async (req, res) => {
       if (sonioxWs && sonioxWs.readyState === WebSocket.OPEN) {
         // Send empty frame to gracefully close
         sonioxWs.send(Buffer.alloc(0));
-        console.log('Sent empty frame to Soniox');  
+        console.log('Sent empty frame to Soniox');
         sonioxWs.close();
         console.log('Closed Soniox connection');
         res.end();
@@ -165,20 +143,13 @@ const handleAudioStream = async (req, res) => {
       if (sonioxWs && sonioxWs.readyState === WebSocket.OPEN) {
         sonioxWs.close();
       }
-      if (!res.headersSent) {
-        res.status(500).json({ message: 'Error receiving audio stream' });
-      } else {
-        res.end();
-      }
     });
   } catch (err) {
     console.error('Error handling audio stream:', err);
     if (sonioxWs) {
       sonioxWs.close();
     }
-    if (!res.headersSent) {
-      res.status(500).json({ message: err.message });
-    }
+    res.status(500).json({ message: err.message });
   }
 };
 
